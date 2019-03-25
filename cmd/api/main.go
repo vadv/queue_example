@@ -51,7 +51,7 @@ type requestStatePayload struct {
 }
 type responsePayload struct {
 	Ok          bool            `json:"ok"`
-	ErrorCode   int             `json:"-"`
+	ErrorCode   int             `json:"error_code"`
 	Description string          `json:"description"`
 	Result      json.RawMessage `json:"result,omitempty"`
 }
@@ -64,6 +64,7 @@ func (s *apiServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if err != nil {
 			panic(err)
 		}
+		w.Header().Set(`Content-Type`, `application/json`)
 		w.Write(data)
 		if resp.ErrorCode != http.StatusOK {
 			w.WriteHeader(resp.ErrorCode)

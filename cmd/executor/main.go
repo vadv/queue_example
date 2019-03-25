@@ -86,9 +86,9 @@ func (w *worker) run() {
 		buffer := &bytes.Buffer{}
 		buffer.WriteString(payload)
 		req, _ := http.NewRequest(`POST`, `http://ya.ru`, buffer)
+		req.Header.Set(`User-Agent`, UserAgent)
 		resp, err := w.httpClient.Do(req)
 		if err != nil {
-			tx.Rollback()
 			w.error = err
 			return
 		}
