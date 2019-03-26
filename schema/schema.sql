@@ -5,39 +5,41 @@ create database queue;
 
 begin;
 
-create type queue_state as enum ('pending', 'succeeded', 'failed');
+create table queue_pending (
+    id      bigserial primary key,
+    tx_id   text not null,
+    payload jsonb not null,
+    constraint tx_id_pengind_unique unique(tx_id)
+);
 
-drop table if exists queue cascade;
-create table queue (
-    id             bigserial,
-    transaction_id text not null,
-    state          queue_state not null default 'pending',
-    payload        jsonb not null,
-    reason         text
+create table queue_failed (
+    id      bigserial primary key,
+    tx_id   text not null,
+    payload jsonb not null,
+    reason  text,
+    constraint tx_id_failed_unique unique(tx_id)
+);
 
-) partition by list (state);
-
-create table queue_state_pending partition of queue
-    for values in ('pending');
-alter table queue_state_pending add primary key(id);
-create unique index queue_state_pending_uniq_transaction_id on queue_state_pending (transaction_id);
-
-create table queue_state_failed partition of queue
-    for values in ('failed');
-alter table queue_state_failed add primary key(id);
-create unique index queue_state_failed_uniq_transaction_id on queue_state_failed (transaction_id);
-
-create table queue_state_succeeded partition of queue
-    for values in ('succeeded');
-alter table queue_state_succeeded add primary key(id);
-create unique index queue_state_succeeded_uniq_transaction_id on queue_state_succeeded (transaction_id);
+create table queue_succeeded (
+    id      bigserial primary key,
+    tx_id   text not null,
+    payload jsonb not null,
+    reason  text,
+    constraint tx_id_succeeded_unique unique(tx_id)
+);
 
 /*
     Lock function
 */
-create or replace function queue_obtain_lock_transaction_id(transaction_id text) returns void as $$
+create or replace function queue_obtain_lock_tx_id(tx_id text) returns void as $$
 begin
     perform pg_advisory_xact_lock( ('x'||substr(md5($1),1,16))::bit(64)::bigint);
+end
+$$ language 'plpgsql';
+
+create or replace function queue_try_obtain_lock_tx_id(tx_id text) returns void as $$
+begin
+    perform pg_try_advisory_xact_lock( ('x'||substr(md5($1),1,16))::bit(64)::bigint);
 end
 $$ language 'plpgsql';
 
@@ -46,39 +48,17 @@ $$ language 'plpgsql';
 */
 create or replace function queue_insert_pending_check_constrain() returns trigger as $$
 begin
-    perform queue_obtain_lock_transaction_id(NEW.transaction_id);
-    if exists (select 1 from queue where transaction_id = NEW.transaction_id) then
-        raise 'transaction already exists: %', NEW.transaction_id using errcode = 'unique_violation';
+    perform queue_obtain_lock_tx_id(NEW.tx_id);
+    if exists (select 1 from queue_failed where tx_id = NEW.tx_id) then
+        raise 'transaction already exists: %', NEW.tx_id using errcode = 'unique_violation';
+    end if;
+    if exists (select 1 from queue_succeeded where tx_id = NEW.tx_id) then
+        raise 'transaction already exists: %', NEW.tx_id using errcode = 'unique_violation';
     end if;
     return new;
 end;
 $$ language 'plpgsql';
-create trigger queue_pending_insert_trg before insert on queue_state_pending
+create trigger queue_pending_insert_trg before insert on queue_pending
     for each row execute procedure queue_insert_pending_check_constrain();
-
-/*
-    Update task status
-*/
-create or replace function queue_update_check_constrain() returns trigger as $$
-begin
-    perform queue_obtain_lock_transaction_id(NEW.transaction_id);
-    if NEW.transaction_id <> OLD.transaction_id then
-        raise 'forbidden to change transaction_id: %', OLD.transaction_id using errcode = 'unique_violation';
-    end if;
-    if NEW.state <> OLD.state then
-        /* small FSM: allow to change state only from 'pending' to another */
-        if OLD.state <> 'pending' then
-            raise 'forbidden to change state of transaction_id: % from % to %', NEW.transaction_id, OLD.state, NEW.state using errcode = 'unique_violation';
-        end if;
-    end if;
-    return new;
-end;
-$$ language 'plpgsql';
-create trigger queue_update_trg before update on queue_state_pending
-    for each row execute procedure queue_update_check_constrain();
-create trigger queue_update_trg before update on queue_state_failed
-    for each row execute procedure queue_update_check_constrain();
-create trigger queue_update_trg before update on queue_state_succeeded
-    for each row execute procedure queue_update_check_constrain();
 
 commit;
